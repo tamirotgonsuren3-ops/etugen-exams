@@ -876,7 +876,7 @@ def write_csv(exams: list[Exam], csv_path: Path) -> None:
             q = exam.questions.get(n)
             row.append(fmt(q.score) if q else "")
         rows.append(row)
-    with csv_path.open("w", encoding="utf-8", newline="") as f:
+    with csv_path.open("w", encoding="utf-8-sig", newline="") as f:
         w = csv.writer(f)
         w.writerow(header)
         w.writerows(rows)

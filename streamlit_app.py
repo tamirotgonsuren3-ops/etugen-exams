@@ -12,12 +12,13 @@ The teacher can:
   * set the similarity threshold with a slider,
   * upload student PDFs and press Check,
   * download the result as a CSV file.
+
+The separate ``pages/1_Дүгнэлт_шалгах.py`` page lets the teacher try an
+answer against any registered question and see how the machine scored it.
 """
 
 from __future__ import annotations
 
-import json
-import os
 import shutil
 import tempfile
 from pathlib import Path
@@ -27,75 +28,20 @@ import streamlit as st
 
 import grade_exams as gx
 import grading_engine as ge
-
-BASE = Path(__file__).resolve().parent
-BANK_PATH = BASE / "reference_answers.json"
-BACKUP_PATH = BASE / "reference_answers.backup.json"
+from app_shared import (
+    BANK_PATH,
+    create_scorer,
+    grading_sidebar,
+    load_bank,
+    merge_edited,
+    save_bank,
+)
 
 st.set_page_config(
     page_title="Монгол хэл — шалгалт засах",
     page_icon="📝",
     layout="wide",
 )
-
-
-# ---------------------------------------------------------------------------
-# Question bank persistence
-# ---------------------------------------------------------------------------
-
-def load_bank() -> list[dict]:
-    if not BANK_PATH.exists():
-        return []
-    try:
-        data = json.loads(BANK_PATH.read_text(encoding="utf-8"))
-        return list(data.get("questions", []))
-    except Exception as exc:
-        st.error(f"`reference_answers.json` уншиж чадсангүй: {exc}")
-        return []
-
-
-def save_bank(entries: list[dict]) -> None:
-    if BANK_PATH.exists():
-        try:
-            shutil.copy2(BANK_PATH, BACKUP_PATH)
-        except Exception:
-            pass
-    payload = {
-        "_comment": (
-            "Багшийн бэлдсэн асуулт + жишиг хариултын сан. "
-            "Streamlit app автоматаар удирдана."
-        ),
-        "questions": entries,
-    }
-    tmp = BANK_PATH.with_name(BANK_PATH.name + ".tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(BANK_PATH)
-
-
-def merge_edited(df: pd.DataFrame, old_entries: list[dict]) -> list[dict]:
-    """Turn the data-editor rows back into question-bank entries."""
-    old_by_question = {
-        ge.normalize(e.get("question", "")): e for e in old_entries
-    }
-    out: list[dict] = []
-    for _, row in df.iterrows():
-        question = str(row.get("Асуулт", "") or "").strip()
-        if not question:
-            continue
-        reference = str(row.get("Жишиг хариулт", "") or "").strip()
-        try:
-            max_score = max(1, int(row.get("Оноо", 1)))
-        except Exception:
-            max_score = 1
-        entry = dict(old_by_question.get(ge.normalize(question), {}))
-        entry.setdefault("id", f"q-{len(out) + 1}")
-        entry.setdefault("type", "generic")
-        entry.setdefault("examples", [])
-        entry["question"] = question
-        entry["reference_answer"] = reference
-        entry["max_score"] = max_score
-        out.append(entry)
-    return out
 
 
 # ---------------------------------------------------------------------------
@@ -194,67 +140,7 @@ def render_results(exams, details):
 # Sidebar
 # ---------------------------------------------------------------------------
 
-st.sidebar.header("⚙️ Тохиргоо")
-
-threshold_pct = st.sidebar.slider(
-    "Зөв гэж тооцох ойролцоо байдлын босго (%)",
-    min_value=0,
-    max_value=100,
-    value=65,
-    step=5,
-    help=(
-        "Оюутны хариулт багшийн жишиг хариулттай энэ хувьцаас илүү "
-        "ойролцоо байвал зөв гэж тооцно. 2+ оноотой асуултад хэсэг "
-        "тус бүрээр энэ босгыг хэрэглэнэ."
-    ),
-)
-
-method_label = st.sidebar.selectbox(
-    "Харьцуулах арга",
-    ["Локал (TF-IDF)", "Gemini (утгын)", "Хосолмол (дундаж)"],
-    index=0,
-    help=(
-        "Локал: интернэтгүй ажиллана. Gemini: утгын ойролцоо байдлыг "
-        "AI-аар үнэлнэ (API key шаардлагатай). Хосолмол: хоёрын дундаж."
-    ),
-)
-
-method = {
-    "Локал (TF-IDF)": "local",
-    "Gemini (утгын)": "gemini",
-    "Хосолмол (дундаж)": "combined",
-}[method_label]
-
-api_key = (
-    os.environ.get("GOOGLE_API_KEY")
-    or os.environ.get("GEMINI_API_KEY")
-    or ""
-)
-
-gemini_model = "gemini-2.5-flash"
-if method in {"gemini", "combined"}:
-    if not api_key:
-        api_key = st.sidebar.text_input(
-            "Gemini API key", type="password", key="gemini_key_input"
-        )
-    gemini_model = st.sidebar.text_input(
-        "Gemini model", value="gemini-2.5-flash", key="gemini_model_input"
-    )
-    if not api_key:
-        st.sidebar.warning(
-            "API key олдсонгүй тул **Локал** арга ашиглана."
-        )
-        method = "local"
-    else:
-        st.sidebar.caption(
-            "Gemini үнэгүй хязгаарт хүрвэл автоматаар локал арга руу шилжинэ."
-        )
-
-st.sidebar.divider()
-st.sidebar.caption(
-    "Босго бага → илүү эвлэрүүлж дүгнэнэ. "
-    "Босго өндөр → зөвхөн маш ойролцоо хариултыг зөв гэнэ."
-)
+threshold, method, api_key, gemini_model = grading_sidebar()
 
 
 # ---------------------------------------------------------------------------
@@ -377,14 +263,8 @@ if check_clicked and uploaded:
         save_bank(entries)
         st.session_state.bank = entries
 
-        scorer = ge.SemanticScorer(
-            mode=method,
-            api_key=api_key or None,
-            model=gemini_model,
-            cache_path=BASE / ".semantic_cache.json",
-        )
+        scorer = create_scorer(method, api_key, gemini_model)
         matcher = ge.QuestionMatcher(entries)
-        threshold = threshold_pct / 100.0
 
         exams = []
         details: list[dict] = []
@@ -475,7 +355,10 @@ with st.expander("ℹ️ Хэрхэн ашиглах вэ?"):
 2. **Босго** slider-ээр хариулт хэдэн хувиар ойролцоо байвал зөв болохыг тохируулна.
 3. Оюутны **PDF** файлуудыг upload хийж **Check** дарна.
 4. Үр дүн болон **CSV татах** товч гарч ирнэ.
-5. Хэрэв зарим асуулт танигдахгүй бол тухайн асуултын текстийг санд байгаа
+5. Асуулт, жишиг хариултаа бүртгэсний дараа sidebar-аас
+   **🧪 Дүгнэлт шалгах** хуудсыг нээж, туршилтын хариултаар машин хэрхэн
+   дүгнэж байгааг шалгана.
+6. Хэрэв зарим асуулт танигдахгүй бол тухайн асуултын текстийг санд байгаа
    тексттэй ойролцоо болгож засаад дахин Check дарна.
 
 **2+ оноотой асуулт:** жишиг хариултыг хэсэг болгон бичнэ, жишээ нь:

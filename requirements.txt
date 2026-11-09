@@ -1,0 +1,10 @@
+# Python 3.10+ шаардлагатай.
+# Системийн poppler-utils (pdftotext, pdfinfo) тусад нь суулгана:
+#   Ubuntu/Debian: sudo apt install poppler-utils
+#   macOS:         brew install poppler
+
+streamlit>=1.50
+pandas>=2.0
+scikit-learn>=1.3
+rapidfuzz>=3.0
+pypdf>=4.0
